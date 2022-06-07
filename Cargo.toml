@@ -17,12 +17,23 @@ anyhow = "1.0"
 imagesize = "0.9"
 cute = "0.3.0"
 rand = "0.8"
+cgmath = "0.18"
+rayon = "1.4"
+tobj = "2.0"
 
 
 [dependencies.image]
 version = "0.24"
 default-features = false
 features = ["png", "jpeg"]
+
+
+[build-dependencies]
+anyhow = "1.0"
+fs_extra = "1.2"
+glob = "0.3"
+rayon = "1.4"
+naga = { version = "0.8", features = ["glsl-in", "spv-out", "wgsl-out"]}
 
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

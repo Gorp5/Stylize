@@ -1,17 +1,18 @@
-mod texture;
-
-use rand::Rng;
-use std::{iter, vec};
-use std::time::{Duration, Instant};
+use crate::compute_pipeline;
 use cute::c;
 use imagesize::size;
+use rand::Rng;
+use rayon::iter::IntoParallelIterator;
+use std::time::{Duration, Instant};
+use std::{iter, vec};
+use std::{thread, time};
 use wgpu::util::DeviceExt;
+use winit::window::Window;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
     window::WindowBuilder,
 };
-use winit::window::Window;
 
 pub async fn run() {
     env_logger::init();
@@ -29,19 +30,32 @@ pub async fn run() {
         width: w as u32,
         height: h as u32,
     };
+
+    // let ten_millis = Duration::from_secs(1);
+    // thread::sleep(ten_millis);
+
     window.set_inner_size(logical_size.to_physical::<u32>(0.5));
     let mut state = State::new(&window).await;
     state.resize(state.size);
+    let mut print_time = Instant::now() + Duration::from_secs(1);
+    let mut draws = 0;
 
     event_loop.run(move |event, _, control_flow| {
         match event {
             Event::MainEventsCleared => {
-                *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::new(1, 0));
                 window.request_redraw();
-            },
+                draws += 1;
+                *control_flow = ControlFlow::Poll;
+                if print_time < Instant::now() {
+                    println!("{} Frames in 1 Second", draws);
+                    print_time = Instant::now() + Duration::from_secs(1);
+                    draws = 0
+                }
+            }
+
             Event::RedrawRequested(_) => {
-                state.update();
-                match state.render() {
+                //state.update();
+                match state.compute() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
@@ -50,34 +64,47 @@ pub async fn run() {
                     // All other errors (Outdated, Timeout) should be resolved by the next frame
                     Err(e) => eprintln!("{:?}", e),
                 }
-            },
+            }
+
             Event::WindowEvent {
                 ref event,
                 window_id,
-            } if window_id == window.id() => if !state.input(event) {
-                match event {
-                    WindowEvent::CloseRequested
-                    | WindowEvent::KeyboardInput {
-                        input:
-                        KeyboardInput {
-                            state: ElementState::Pressed,
-                            virtual_keycode: Some(VirtualKeyCode::Escape),
+            } if window_id == window.id() => {
+                if !state.input(event) {
+                    match event {
+                        WindowEvent::CloseRequested
+                        | WindowEvent::KeyboardInput {
+                            input:
+                                KeyboardInput {
+                                    state: ElementState::Pressed,
+                                    virtual_keycode: Some(VirtualKeyCode::Escape),
+                                    ..
+                                },
                             ..
-                        },
-                        ..
-                    } => *control_flow = ControlFlow::Exit,
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(*physical_size);
-                    },
-                    WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                        state.resize(**new_inner_size);
+                        } => *control_flow = ControlFlow::Exit,
+                        WindowEvent::Resized(physical_size) => {
+                            state.resize(*physical_size);
+                        }
+                        WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
+                            state.resize(**new_inner_size);
+                        }
+                        _ => {}
                     }
-                    _ => {}
                 }
             }
             _ => {}
         }
     });
+}
+
+struct ComputeBinding {
+    base_texture: wgpu::TextureView,
+    base_texture_sampler: wgpu::Sampler,
+    //reconstructed_texture: wgpu::TextureView,
+    //reconstructed_texture_sampler: wgpu::Sampler,
+    brush_shape: wgpu::Buffer,
+    //texture_sampler: wgpu::Sampler,
+    compute_info: ComputeInfo,
 }
 
 struct State {
@@ -87,26 +114,36 @@ struct State {
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
+    vertices: Vec<Vertex>,
+    vertex_buffer: Buffer,
     num_indices: u32,
     diffuse_bind_group: wgpu::BindGroup,
     diffuse_texture: texture::Texture,
     box_num: i32,
     num_triangles: i32,
+    compute_pipeline: wgpu::ComputePipeline,
+    binding: ComputeBinding,
 }
+//     reconstructed_texture: wgpu::Texture,
 
 impl State {
     async fn new(window: &Window) -> Self {
         let size = window.inner_size();
         let instance = wgpu::Instance::new(wgpu::Backends::all());
         let surface = unsafe { instance.create_surface(window) };
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
-            }).await.unwrap();
-        let num_triangles= 150;
-        let (device, queue) = adapter.request_device(&wgpu::DeviceDescriptor {
+            })
+            .await
+            .unwrap();
+
+        let num_triangles = 2;
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
                     label: None,
                     features: wgpu::Features::empty(),
                     limits: if cfg!(target_arch = "wasm32") {
@@ -116,7 +153,9 @@ impl State {
                     },
                 },
                 None,
-            ).await.unwrap();
+            )
+            .await
+            .unwrap();
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -125,12 +164,14 @@ impl State {
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
         };
+
         surface.configure(&device, &config);
 
         // Texture Creation
         let diffuse_bytes = include_bytes!("images/city.png");
-        let diffuse_texture = texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "images/city.png").unwrap();
-
+        let diffuse_texture =
+            texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "images/city.png")
+                .unwrap();
 
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -154,30 +195,28 @@ impl State {
                 ],
                 label: Some("texture_bind_group_layout"),
             });
-        let diffuse_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: &texture_bind_group_layout,
-                entries: &[
-
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&diffuse_texture.view), // CHANGED!
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler), // CHANGED!
-                    }
-                ],
-                label: Some("diffuse_bind_group"),
-            });
-
+        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view), // CHANGED!
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler), // CHANGED!
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
                 bind_group_layouts: &[&texture_bind_group_layout], // NEW!
                 push_constant_ranges: &[],
@@ -218,25 +257,38 @@ impl State {
             },
             depth_stencil: None, // 1.
             multisample: wgpu::MultisampleState {
-                count: 1, // 2.
-                mask: !0, // 3.
+                count: 1,                         // 2.
+                mask: !0,                         // 3.
                 alpha_to_coverage_enabled: false, // 4.
             },
             multiview: None, // 5.
         });
 
-        let d = State::get_vertices(num_triangles);
-        let verticies: &[Vertex] = &d[1..d.len()];
+        let mut vertices = State::get_vertices(num_triangles);
+        let mut vert: &[Vertex] = &vertices[1..vertices.len()];
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let mut vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
-            contents: bytemuck::cast_slice(verticies),
+            contents: bytemuck::cast_slice(vert),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let num_indices = verticies.len() as u32;
+        let u32_size = std::mem::size_of::<u32>() as u32;
 
+        // let output_buffer_size = (u32_size * size * size) as wgpu::BufferAddress;
+        // let output_buffer_desc = wgpu::BufferDescriptor {
+        //     size: output_buffer_size,
+        //     usage: wgpu::BufferUsages::COPY_DST
+        //         // this tells wpgu that we want to read this buffer from the cpu
+        //         | wgpu::BufferUsages::MAP_READ,
+        //     label: None,
+        //     mapped_at_creation: false,
+        // };
+        // let output_buffer = device.create_buffer(&output_buffer_desc);
+
+        let num_indices = vert.len() as u32;
         let box_num = 1;
+        let comp = compute_pipeline::ComputePipeline::get_pipeline(&device);
 
         Self {
             surface,
@@ -245,6 +297,9 @@ impl State {
             config,
             size,
             render_pipeline,
+            compute_pipeline: comp.1,
+            binding: comp.0,
+            vertices,
             vertex_buffer,
             num_indices,
             diffuse_bind_group,
@@ -254,16 +309,26 @@ impl State {
         }
     }
 
-    pub  fn get_vertices(num: i32) -> Vec<Vertex> {
+    pub fn get_vertices(num: i32) -> Vec<Vertex> {
         let mut rng = rand::thread_rng();
         let mut count = 0;
-        let mut vertices: Vec<Vertex> = vec!();
+        let mut vertices: Vec<Vertex> = vec![];
         while count < num {
+            let col = [
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..1.0),
+                rng.gen_range(0.0..0.3),
+            ];
+
             for _ in 1..3 {
                 let p = [rng.gen_range(-1.3..1.3), rng.gen_range(-1.3..1.3), 0.0];
                 let t = [(p[0] - 1.0) / -2.0, (p[1] - 1.0) / -2.0];
-                let col = [rng.gen_range(0.0..1.0), rng.gen_range(0.0..1.0), rng.gen_range(0.0..1.0), rng.gen_range(0.0..0.3),];
-                vertices.push(Vertex { position: p, tex_coords: t, color: col, });
+
+                vertices.push(Vertex {
+                    position: p,
+                    color: col,
+                });
             }
             count = count + 1;
         }
@@ -277,7 +342,6 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
         }
-
     }
 
     fn input(&mut self, _event: &WindowEvent) -> bool {
@@ -285,7 +349,19 @@ impl State {
     }
 
     fn update(&mut self) {
-        // todo!()
+        let mut d = State::get_vertices(self.num_triangles);
+        self.vertices.append(&mut d);
+        let vertices: &[Vertex] = &self.vertices[1..self.vertices.len()];
+
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("Vertex Buffer"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+        self.num_indices = vertices.len() as u32;
+        self.vertex_buffer = vertex_buffer;
     }
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
@@ -336,19 +412,60 @@ impl State {
 
         Ok(())
     }
+
+    fn compute(&mut self) -> Result<(), wgpu::SurfaceError> {
+        let vertices = State::get_vertices(256);
+
+        let brush = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(&format!("{:?} Brush Buffer", m.name)),
+            contents: bytemuck::cast_slice(&vertices),
+            // UPDATED!
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Calculate the Stuff
+        let binding = ComputeBinding {
+            base_texture: self.binding.base_texture.view,
+            base_texture_sampler: self.binding.base_texture.sampler,
+            // reconstructed_texture: view,
+            // reconstructed_texture_sampler: sampler,
+            brush_shape: brush,
+            compute_info: self.binding.compute_info,
+        };
+        let binder = binding.create_bind_group(&binding, device, Some("Error BindGroup"));
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Error Calc"),
+        });
+
+        // Compute Pass
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+            });
+
+            pass.set_pipeline(&self.pipeline);
+            pass.set_bind_group(0, &binder, &[]);
+            pass.dispatch(self.binding.compute_info.num_objects as u32, 1, 1);
+        }
+        queue.submit(iter::once(encoder.finish()));
+        device.poll(wgpu::Maintain::Wait);
+
+        Ok(())
+    }
 }
 
-#[cfg(target_arch="wasm32")]
+use crate::texture::Texture;
+#[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
-use wgpu::{BindGroupLayout, Instance, RenderPipeline, Sampler};
+//use web_sys::console::time;
+use crate::texture;
+use wgpu::{BindGroupLayout, Buffer, Instance, RenderPipeline, Sampler};
 use winit::dpi::{LogicalSize, PhysicalSize};
-use crate::libs::texture::Texture;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
-    tex_coords: [f32; 2],
     color: [f32; 4],
 }
 
@@ -367,24 +484,11 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x2, // NEW!
-                },
-                wgpu::VertexAttribute {
-                    offset: mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
-                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x4, // NEW!
                 },
-            ]
+            ],
         }
     }
 }
 
-const BLUE: [f32; 4] = [0.3, 0.3, 1.0, 0.8];
 const NONE: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
-
-const VERTICES: &[Vertex] = &[
-    Vertex { position: [1.0, 1.0, 0.0], tex_coords: [0.0, 0.0], color: NONE, }, // A
-    Vertex { position: [-1.0, 1.0, 0.0], tex_coords: [1.0, 0.0], color: NONE, }, // B
-    Vertex { position: [-1.0, -1.0, 0.0], tex_coords: [1.0, 1.0], color: NONE, }, // C
-    Vertex { position: [1.0, -1.0, 0.0], tex_coords: [0.0, 1.0], color: NONE, }, // D
-];
