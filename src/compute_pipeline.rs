@@ -1,15 +1,14 @@
-use crate::pipeline;
 use crate::texture::Texture;
 use anyhow::*;
 use image::GenericImageView;
 use rayon::prelude::*;
 use std::ops::Range;
 use std::path::Path;
-use web_sys::create_texture;
+//use web_sys::create_texture;
 use wgpu::util::DeviceExt;
 use wgpu::{TextureDescriptor, TextureDimension};
 
-pub trait Vertex {
+/*pub trait Vertex {
     fn desc<'a>() -> wgpu::VertexBufferLayout<'a>;
 }
 
@@ -181,7 +180,7 @@ pub struct ComputePipeline {
     binding: ComputeBinding,
     pipeline: wgpu::ComputePipeline,
 }
-
+/*
 impl ComputePipeline {
     pub fn get_pipeline(device: &wgpu::Device) -> Self {
         println!("Creating Compute pipeline");
@@ -267,4 +266,5 @@ pub fn create_compute_pipeline(
         entry_point: "main",
     });
     pipeline
-}
+}*/
+*/

@@ -20,6 +20,7 @@ rand = "0.8"
 cgmath = "0.18"
 rayon = "1.4"
 tobj = "2.0"
+web-sys = "0.3.57"
 
 
 [dependencies.image]
