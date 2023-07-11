@@ -37,9 +37,9 @@ fn fs_main(orig_image_data: VertexOutput) -> [[location(0)]] vec4<f32> {
      let shape_color: vec4<f32> = orig_image_data.color;
      let alpha = shape_color[3] / 255.0;
      let transformed_color = vec4<f32>(
-     orig_color[0] - (reconstructing_color[0] * (1.0 - alpha) + shape_color[0] * alpha),
-     orig_color[1] - (reconstructing_color[1] * (1.0 - alpha) + shape_color[1] * alpha),
-     orig_color[2] - (reconstructing_color[2] * (1.0 - alpha) + shape_color[2] * alpha),
+     orig_color[0] - (shape_color[0] * (1.0 - alpha)),
+     orig_color[1] - (shape_color[1] * (1.0 - alpha)),
+     orig_color[2] - (shape_color[2] * (1.0 - alpha)),          //(reconstructing_color[2] * (1.0 - alpha) + shape_color[2] * alpha)
      255.0);//(data[0] + color[0] * color[3], data[1] + color[1] * color[3], data[2] + color[2] * color[3], data[3] + color[3]);
      return transformed_color;
 }

@@ -1,4 +1,4 @@
-use crate::compute_pipeline;
+//use crate::compute_pipeline;
 use cute::c;
 use imagesize::size;
 use rand::Rng;
@@ -6,7 +6,7 @@ use rayon::iter::IntoParallelIterator;
 use std::time::{Duration, Instant};
 use std::{iter, vec};
 use std::{thread, time};
-use image::{DynamicImage, GenericImageView, ImageResult};
+use image::{DynamicImage, GenericImageView, image_dimensions, ImageResult};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use winit::{
@@ -45,12 +45,10 @@ pub async fn run() {
         match event {
             Event::MainEventsCleared => {
                 // window.request_redraw();
-                // draws += 1;
                 *control_flow = ControlFlow::Poll;
                 if print_time < Instant::now() {
                     println!("{} Frames in 1 Second", draws);
                     print_time = Instant::now() + Duration::from_secs(1);
-                    // draws = 0
                     state.update();
                     window.request_redraw();
                 }
@@ -64,7 +62,7 @@ pub async fn run() {
                 // If score > 0 use the shape, else repeat
 
                 //state.update();
-                match state.render() {
+                match state.compute() {
                     Ok(_) => {}
                     // Reconfigure the surface if lost
                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
@@ -106,23 +104,12 @@ pub async fn run() {
     });
 }
 
-/*struct ComputeBinding {
-    base_texture: wgpu::TextureView,
-    base_texture_sampler: wgpu::Sampler,
-    //reconstructed_texture: wgpu::TextureView,
-    //reconstructed_texture_sampler: wgpu::Sampler,
-    brush_shape: wgpu::Buffer,
-    //texture_sampler: wgpu::Sampler,
-    compute_info: ComputeInfo,
-}*/
-
 struct State {
     surface: wgpu::Surface,
-    device: wgpu::Device,
     queue: wgpu::Queue,
+    device: wgpu::Device,
     config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
-    render_pipeline: wgpu::RenderPipeline,
     vertices: Vec<Vertex>,
     vertex_buffer: Buffer,
     num_indices: u32,
@@ -132,10 +119,38 @@ struct State {
     texture_bind_group_layout: BindGroupLayout,
     box_num: i32,
     num_triangles: i32,
-    //compute_pipeline: wgpu::ComputePipeline,
-    //binding: ComputeBinding,
 }
-//     reconstructed_texture: wgpu::Texture,
+
+struct ComputeBinding {
+    base_texture: wgpu::TextureView,
+    base_texture_sampler: wgpu::Sampler,
+    //reconstructed_texture: wgpu::TextureView,
+    //reconstructed_texture_sampler: wgpu::Sampler,
+    //brush_shape: wgpu::Buffer,
+    //texture_sampler: wgpu::Sampler,
+    output: Vec<u32>,
+}
+
+
+fn create_compute_pipeline(
+    device: &wgpu::Device,
+    bind_group_layouts: &[&wgpu::BindGroupLayout],
+    shader_src: wgpu::ShaderModuleDescriptor,
+    label: Option<&str>,
+) -> wgpu::ComputePipeline {
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label,
+        bind_group_layouts,
+        push_constant_ranges: &[],
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label,
+        layout: Some(&layout),
+        module: &device.create_shader_module(&shader_src),
+        entry_point: "main",
+    });
+    pipeline
+}
 
 impl State {
     async fn new(window: &Window) -> Self {
@@ -170,7 +185,7 @@ impl State {
 
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            format: surface.get_preferred_format(&adapter).unwrap(),
             width: size.width,
             height: size.height,
             present_mode: wgpu::PresentMode::Fifo,
@@ -238,6 +253,59 @@ impl State {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
                 },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+
+        let compute_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::COMPUTE,
+                ty: wgpu::BindingType::Texture {
+                    multisampled: false,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                },
+                count: None,
+            },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage {
+                            // We will change the values in this buffer
+                            read_only: false,
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+            label: Some("texture_bind_group_layout"),
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.base_texture.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.base_texture_sampler.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.outputBuffer.as_entire_binding(),
+                }
             ],
             label: Some("diffuse_bind_group"),
         });
@@ -321,17 +389,12 @@ impl State {
 
         let num_indices = vert.len() as u32;
         let box_num = 1;
-        //let comp = compute_pipeline::ComputePipeline::get_pipeline(&device);
-
         Self {
             surface,
-            device,
             queue,
+            device,
             config,
             size,
-            render_pipeline,
-            //compute_pipeline: comp.1,
-            //binding: comp.0,
             vertices,
             vertex_buffer,
             num_indices,
@@ -441,7 +504,7 @@ impl State {
             let render_pass_desc = wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[wgpu::RenderPassColorAttachment {
-                    view: &self.next_texture.view,
+                    view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -459,15 +522,15 @@ impl State {
             let mut render_pass = encoder.begin_render_pass(&render_pass_desc);
 
 
-            render_pass.set_pipeline(&self.render_pipeline);
-            render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-
-            render_pass.draw(0..self.num_indices, 0..1);
-
-            //render_pass.set_vertex_buffer(0, self.vertex_buffer2.slice(..));
-            //render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            // render_pass.set_pipeline(&self.render_pipeline);
+            // render_pass.set_bind_group(0, &self.diffuse_bind_group, &[]);
+            // render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            // // render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            //
+            // render_pass.draw(0..self.num_indices, 0..1);
+            //
+            // //render_pass.set_vertex_buffer(0, self.vertex_buffer2.slice(..));
+            // //render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
         }
 
         // encoder.copy_texture_to_texture(
@@ -490,28 +553,41 @@ impl State {
         output.present();
         Ok(())
     }
-    /*
+
     fn compute(&mut self) -> Result<(), wgpu::SurfaceError> {
         let vertices = State::get_vertices(256);
+        let output = Vec::with_capacity(10);
+        let &base_texture = &self.next_texture;
 
-        let brush = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(&format!("{:?} Brush Buffer", m.name)),
-            contents: bytemuck::cast_slice(&vertices),
-            // UPDATED!
-            usage: wgpu::BufferUsages::STORAGE,
-        });
 
         // Calculate the Stuff
         let binding = ComputeBinding {
-            base_texture: self.binding.base_texture.view,
-            base_texture_sampler: self.binding.base_texture.sampler,
+            base_texture: base_texture.view,
+            base_texture_sampler: base_texture.sampler,
             // reconstructed_texture: view,
             // reconstructed_texture_sampler: sampler,
-            brush_shape: brush,
-            compute_info: self.binding.compute_info,
+            output,
         };
-        let binder = binding.create_bind_group(&binding, device, Some("Error BindGroup"));
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+
+        let binder = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(&next_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                },
+            ],
+            label: Some("diffuse_bind_group"),
+        });
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Error Calc"),
         });
 
@@ -525,12 +601,11 @@ impl State {
             pass.set_bind_group(0, &binder, &[]);
             pass.dispatch(self.binding.compute_info.num_objects as u32, 1, 1);
         }
-        queue.submit(iter::once(encoder.finish()));
-        device.poll(wgpu::Maintain::Wait);
+        self.queue.submit(iter::once(encoder.finish()));
+        self.device.poll(wgpu::Maintain::Wait);
 
         Ok(())
     }
-    */
 }
 
 use crate::texture::Texture;
@@ -538,7 +613,7 @@ use crate::texture::Texture;
 use wasm_bindgen::prelude::*;
 //use web_sys::console::time;
 use crate::texture;
-use wgpu::{BindGroup, BindGroupLayout, Buffer, Instance, RenderPipeline, Sampler};
+use wgpu::{BindGroup, BindGroupLayout, Buffer, BufferBinding, Instance, RenderPipeline, Sampler};
 use winit::dpi::{LogicalSize, PhysicalSize};
 
 #[repr(C)]

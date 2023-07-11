@@ -180,7 +180,7 @@ pub struct ComputePipeline {
     binding: ComputeBinding,
     pipeline: wgpu::ComputePipeline,
 }
-/*
+
 impl ComputePipeline {
     pub fn get_pipeline(device: &wgpu::Device) -> Self {
         println!("Creating Compute pipeline");
@@ -244,7 +244,7 @@ impl ComputePipeline {
             compute_info,
         };
 
-        Self { binding, pipeline }
+        Self {binding, pipeline}
     }
 }
 
@@ -266,5 +266,5 @@ pub fn create_compute_pipeline(
         entry_point: "main",
     });
     pipeline
-}*/
+}
 */
