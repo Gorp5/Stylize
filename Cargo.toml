@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1", features=["derive"] }
-clap = { version = "4", features=["derive"] }
+clap = { version = "4", features = ["derive"] }
 image = "0.25"
 rand = "0.8"
 wgpu = "0.20"

@@ -6,6 +6,7 @@ mod gpu;
 mod score;
 
 use anyhow::Result;
+use clap::Parser;
 use rand::SeedableRng;
 
 fn main() -> Result<()> {

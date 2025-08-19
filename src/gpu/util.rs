@@ -1,6 +1,6 @@
 use anyhow::Result;
 use wgpu::util::DeviceExt;
-use wgpu::{Device, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, Extent3d, TextureUsages, TextureDataLayout};
+use wgpu::{Device, Queue, Texture, TextureDescriptor, TextureDimension, TextureFormat, Extent3d, TextureUsages};
 use wgpu::util::TextureDataOrder;
 
 /// Upload a CPU RGBA8 image buffer into a GPU Texture and return it with its `TextureView`.

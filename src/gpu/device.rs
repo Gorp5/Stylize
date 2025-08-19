@@ -13,9 +13,9 @@ impl GpuContext {
             .ok_or_else(|| anyhow::anyhow!("No suitable GPU adapter found"))?;
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
-                features: Features::empty(),
-                limits: Default::default(),
                 label: None,
+                required_features: Default::default(),
+                required_limits: Default::default(),
             },
             None,
         ))?;
