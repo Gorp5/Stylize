@@ -19,7 +19,7 @@ pub async fn run() {
     env_logger::init();
     let event_loop = EventLoop::new();
     let window = WindowBuilder::new().build(&event_loop).unwrap();
-    let (w, h) = match size("src/images/city.png") {
+    let (w, h) = match size("../images/city.png") {
         Ok(dim) => (dim.width, dim.height),
         Err(why) => {
             println!("Error getting dimensions: {:?}", why);
@@ -194,12 +194,12 @@ impl State {
         surface.configure(&device, &config);
 
         // Texture Creation
-        let diffuse_bytes = include_bytes!("images/city.png");
+        let diffuse_bytes = include_bytes!("../images/city.png");
         let diffuse_texture =
             texture::Texture::from_bytes(&device, &queue, diffuse_bytes, "images/city.png")
                 .unwrap();
 
-        let dimension = State::get_size(include_bytes!("images/city.png")).unwrap().dimensions();
+        let dimension = State::get_size(include_bytes!("../images/city.png")).unwrap().dimensions();
 
         let next_texture =
             texture::Texture::from_image(&device, &queue, &image::DynamicImage::new_rgb8(dimension.0, dimension.1), Some(""))
@@ -291,28 +291,37 @@ impl State {
             label: Some("texture_bind_group_layout"),
         });
 
-        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.base_texture.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: self.base_texture_sampler.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.outputBuffer.as_entire_binding(),
-                }
-            ],
-            label: Some("diffuse_bind_group"),
+        let mut output_vec = vec![dimension.0];
+        let mut output_address: &[u32] = &output_vec[0..output_vec.len()];
+
+        let mut output_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Output Buffer"),
+            contents: bytemuck::cast_slice(output_address),
+            usage: wgpu::BufferUsages::VERTEX,
         });
 
         let shader = device.create_shader_module(&wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+        });
+
+        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&next_texture.view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&next_texture.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: output_buffer.as_entire_binding(),
+                }
+            ],
+            label: Some("compute_bind_group"),
         });
 
         let render_pipeline_layout =
@@ -366,7 +375,7 @@ impl State {
         });
 
         let mut vertices = State::get_vertices(num_triangles);
-        let mut vert: &[Vertex] = &vertices[1..vertices.len()];
+        let mut vert: &[Vertex] = &vertices[0..vertices.len()];
 
         let mut vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
@@ -375,17 +384,6 @@ impl State {
         });
 
         let u32_size = std::mem::size_of::<u32>() as u32;
-
-        // let output_buffer_size = (u32_size * size * size) as wgpu::BufferAddress;
-        // let output_buffer_desc = wgpu::BufferDescriptor {
-        //     size: output_buffer_size,
-        //     usage: wgpu::BufferUsages::COPY_DST
-        //         // this tells wpgu that we want to read this buffer from the cpu
-        //         | wgpu::BufferUsages::MAP_READ,
-        //     label: None,
-        //     mapped_at_creation: false,
-        // };
-        // let output_buffer = device.create_buffer(&output_buffer_desc);
 
         let num_indices = vert.len() as u32;
         let box_num = 1;
@@ -559,6 +557,10 @@ impl State {
         let output = Vec::with_capacity(10);
         let &base_texture = &self.next_texture;
 
+        let shader = self.device.create_shader_module(&wgpu::ShaderModuleDescriptor {
+            label: Some("Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("add_shader.comp.wgsl").into()),
+        });
 
         // Calculate the Stuff
         let binding = ComputeBinding {
@@ -570,19 +572,19 @@ impl State {
         };
 
         let binder = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
+            layout: &self.texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&self.diffuse_texture.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&next_texture.view),
+                    resource: wgpu::BindingResource::TextureView(&self.next_texture.view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_texture.sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.diffuse_texture.sampler),
                 },
             ],
             label: Some("diffuse_bind_group"),
@@ -590,6 +592,21 @@ impl State {
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Error Calc"),
         });
+
+        let label = Some("ComputePipeline");
+        let layout = self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label,
+            bind_group_layouts: &[binder],
+            push_constant_ranges: &[],
+        });
+
+        let compute_pipeline = self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label,
+            layout: Some(&layout),
+            module: &self.sha,
+            entry_point: "main",
+        });
+
 
         // Compute Pass
         {
@@ -613,7 +630,7 @@ use crate::texture::Texture;
 use wasm_bindgen::prelude::*;
 //use web_sys::console::time;
 use crate::texture;
-use wgpu::{BindGroup, BindGroupLayout, Buffer, BufferBinding, Instance, RenderPipeline, Sampler};
+use wgpu::{BindGroup, BindGroupLayout, Buffer, BufferBinding, ComputePipeline, Instance, RenderPipeline, Sampler};
 use winit::dpi::{LogicalSize, PhysicalSize};
 
 #[repr(C)]
